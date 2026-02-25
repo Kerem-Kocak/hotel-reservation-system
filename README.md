@@ -1,2 +1,2 @@
-# hotel-reservation-system
-A 3NF normalized database system designed to manage guests, room inventory, reservations and payments.
+Project Architecture: Software & 3D AI Bridge
+This system is built with a focus on data integrity through Third Normal Form (3NF) normalization. Beyond standard CRUD operations, it utilizes Stored Procedures for complex availability logic and Triggers for real-time room status updates.
