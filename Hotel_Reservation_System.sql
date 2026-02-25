@@ -114,9 +114,173 @@ Insert into Payments(ReservationID,PaymentDate,Amount,PaymentMethod,PaymentStatu
 (9,'2025-09-22 10:00:00',1600.00,'Cash','Completed'),       
 (10,'2025-11-18 09:30:00',1050.00,'Credit Card','Completed');
 
+-- ============================================================
+-- View: vw_RoomTypePerformance
+-- Shows room statistics grouped by room type
+-- ============================================================
+CREATE OR REPLACE VIEW vw_RoomTypePerformance AS
+SELECT
+    rt.TypeName,
+    COUNT(r.RoomID) AS TotalRooms,
+    SUM(CASE WHEN r.Room_Status = 'Available' THEN 1 ELSE 0 END) AS AvailableRooms,
+    SUM(CASE WHEN r.Room_Status = 'Occupied' THEN 1 ELSE 0 END) AS OccupiedRooms,
+    rt.PricePerNight
+FROM RoomTypes rt
+LEFT JOIN Rooms r ON rt.RoomTypeID = r.RoomTypeID
+GROUP BY rt.RoomTypeID, rt.TypeName, rt.PricePerNight;
 
+-- ============================================================
+-- Stored Procedure: sp_GetAvailableRooms
+-- Returns rooms available for a given date range
+-- ============================================================
+DELIMITER //
+CREATE PROCEDURE sp_GetAvailableRooms(
+    IN p_CheckInDate DATE,
+    IN p_CheckOutDate DATE
+)
+BEGIN
+    SELECT r.RoomID, r.RoomNumber, r.Floor, r.Room_Status,
+           rt.TypeName, rt.Capacity, rt.PricePerNight
+    FROM Rooms r
+    JOIN RoomTypes rt ON r.RoomTypeID = rt.RoomTypeID
+    WHERE r.Room_Status = 'Available'
+      AND r.RoomID NOT IN (
+          SELECT res.RoomID FROM Reservations res
+          WHERE res.ReservationStatus IN ('Confirmed', 'Checked-In')
+            AND res.CheckInDate < p_CheckOutDate
+            AND res.CheckOutDate > p_CheckInDate
+      );
+END //
+DELIMITER ;
 
+-- ============================================================
+-- Stored Procedure: sp_GuestHistory
+-- Returns reservation history for a given guest
+-- ============================================================
+DELIMITER //
+CREATE PROCEDURE sp_GuestHistory(
+    IN p_GuestID INT
+)
+BEGIN
+    SELECT res.ReservationID, r.RoomNumber, rt.TypeName,
+           res.CheckInDate, res.CheckOutDate, res.TotalAmount,
+           res.ReservationStatus, p.PaymentMethod, p.PaymentStatus
+    FROM Reservations res
+    JOIN Rooms r ON res.RoomID = r.RoomID
+    JOIN RoomTypes rt ON r.RoomTypeID = rt.RoomTypeID
+    LEFT JOIN Payments p ON res.ReservationID = p.ReservationID
+    WHERE res.GuestID = p_GuestID
+    ORDER BY res.CheckInDate DESC;
+END //
+DELIMITER ;
 
+-- ============================================================
+-- Stored Procedure: sp_CreateResWithPay
+-- Creates a reservation and payment in a single transaction
+-- ============================================================
+DELIMITER //
+CREATE PROCEDURE sp_CreateResWithPay(
+    IN p_GuestID INT,
+    IN p_RoomID INT,
+    IN p_BookingDate DATE,
+    IN p_CheckInDate DATE,
+    IN p_CheckOutDate DATE,
+    IN p_TotalAmount DECIMAL(10,2),
+    IN p_PaymentMethod VARCHAR(50)
+)
+BEGIN
+    DECLARE v_ReservationID INT;
+
+    START TRANSACTION;
+
+    INSERT INTO Reservations(GuestID, RoomID, BookingDate, CheckInDate, CheckOutDate, TotalAmount, ReservationStatus)
+    VALUES (p_GuestID, p_RoomID, p_BookingDate, p_CheckInDate, p_CheckOutDate, p_TotalAmount, 'Confirmed');
+
+    SET v_ReservationID = LAST_INSERT_ID();
+
+    INSERT INTO Payments(ReservationID, PaymentDate, Amount, PaymentMethod, PaymentStatus)
+    VALUES (v_ReservationID, NOW(), p_TotalAmount, p_PaymentMethod, 'Completed');
+
+    COMMIT;
+
+    SELECT v_ReservationID AS ReservationID;
+END //
+DELIMITER ;
+
+-- ============================================================
+-- Trigger: trg_AutoUpdateRoomStatus
+-- When a reservation status changes to 'Checked-In',
+-- automatically update the room status to 'Occupied'
+-- ============================================================
+DELIMITER //
+CREATE TRIGGER trg_AutoUpdateRoomStatus
+AFTER UPDATE ON Reservations
+FOR EACH ROW
+BEGIN
+    IF NEW.ReservationStatus = 'Checked-In' AND OLD.ReservationStatus != 'Checked-In' THEN
+        UPDATE Rooms SET Room_Status = 'Occupied' WHERE RoomID = NEW.RoomID;
+    END IF;
+END //
+DELIMITER ;
+
+-- ============================================================
+-- Stored Procedure: sp_RoomTypePerformance
+-- Wrapper to SELECT from the vw_RoomTypePerformance view
+-- ============================================================
+DELIMITER //
+CREATE PROCEDURE sp_RoomTypePerformance()
+BEGIN
+    SELECT * FROM vw_RoomTypePerformance;
+END //
+DELIMITER ;
+
+-- ============================================================
+-- Stored Procedure: sp_GetAllGuests
+-- Returns all guest records
+-- ============================================================
+DELIMITER //
+CREATE PROCEDURE sp_GetAllGuests()
+BEGIN
+    SELECT GuestID, FirstName, LastName, Email, Phone, NationalID
+    FROM Guests
+    ORDER BY LastName, FirstName;
+END //
+DELIMITER ;
+
+-- ============================================================
+-- Stored Procedure: sp_GetConfirmedReservations
+-- Returns reservations with 'Confirmed' status for check-in
+-- ============================================================
+DELIMITER //
+CREATE PROCEDURE sp_GetConfirmedReservations()
+BEGIN
+    SELECT res.ReservationID, g.FirstName, g.LastName,
+           r.RoomNumber, res.CheckInDate, res.CheckOutDate,
+           res.ReservationStatus
+    FROM Reservations res
+    JOIN Guests g ON res.GuestID = g.GuestID
+    JOIN Rooms r ON res.RoomID = r.RoomID
+    WHERE res.ReservationStatus = 'Confirmed'
+    ORDER BY res.CheckInDate;
+END //
+DELIMITER ;
+
+-- ============================================================
+-- Stored Procedure: sp_CheckInReservation
+-- Updates reservation status to 'Checked-In'
+-- (This fires trg_AutoUpdateRoomStatus to set room to 'Occupied')
+-- ============================================================
+DELIMITER //
+CREATE PROCEDURE sp_CheckInReservation(
+    IN p_ReservationID INT
+)
+BEGIN
+    UPDATE Reservations
+    SET ReservationStatus = 'Checked-In'
+    WHERE ReservationID = p_ReservationID
+      AND ReservationStatus = 'Confirmed';
+END //
+DELIMITER ;
 
 
 
